@@ -1,0 +1,31 @@
+{
+  "name": "@paper-trading/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.1",
+    "@fastify/jwt": "^9.1.0",
+    "@paper-trading/algo-runner": "workspace:*",
+    "@paper-trading/broker-adapters": "workspace:*",
+    "@paper-trading/db": "workspace:*",
+    "@paper-trading/oms": "workspace:*",
+    "@paper-trading/strategy-sdk": "workspace:*",
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^16.5.0",
+    "fastify": "^5.3.3",
+    "zod": "^3.25.42"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}

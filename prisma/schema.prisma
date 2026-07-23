@@ -1,0 +1,394 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Segment {
+  EQUITY
+  FNO
+  COMMODITY
+  CURRENCY
+}
+
+enum Exchange {
+  NSE
+  BSE
+  NFO
+  BFO
+  MCX
+  CDS
+}
+
+enum InstrumentType {
+  EQ
+  FUT
+  CE
+  PE
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+  SL
+  SL_M
+}
+
+enum ProductType {
+  CNC
+  MIS
+  NRML
+}
+
+enum OrderStatus {
+  PENDING
+  OPEN
+  COMPLETE
+  CANCELLED
+  REJECTED
+}
+
+enum TradingMode {
+  PAPER
+  LIVE
+}
+
+enum AlgoStatus {
+  DRAFT
+  BACKTESTING
+  DEPLOYED
+  PAUSED
+  STOPPED
+}
+
+enum BrokerType {
+  ZERODHA
+  ANGEL_ONE
+  UPSTOX
+  FYERS
+  DHANI
+  NSE_INDIA
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  paperAccounts     PaperAccount[]
+  brokerConnections BrokerConnection[]
+  watchlists        Watchlist[]
+  algos             Algo[]
+  orders            Order[]
+  tradeJournals     TradeJournal[]
+  auditLogs         AuditLog[]
+}
+
+model PaperAccount {
+  id              String   @id @default(cuid())
+  userId          String
+  name            String   @default("Default")
+  startingBalance Decimal  @db.Decimal(18, 2)
+  currentBalance  Decimal  @db.Decimal(18, 2)
+  riskPercent     Decimal  @default(2) @db.Decimal(5, 2)
+  rewardRatio     Decimal  @default(1.5) @db.Decimal(5, 2)
+  fundUsed        Decimal  @default(0) @db.Decimal(18, 2)
+  realizedProfit  Decimal  @default(0) @db.Decimal(18, 2)
+  realizedLoss    Decimal  @default(0) @db.Decimal(18, 2)
+  preferredMode   TradingMode @default(PAPER)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders       Order[]
+  positions    Position[]
+  holdings     Holding[]
+  deployments  AlgoDeployment[]
+}
+
+model Instrument {
+  id             String         @id @default(cuid())
+  symbol         String
+  name           String
+  segment        Segment
+  exchange       Exchange
+  instrumentType InstrumentType
+  expiry         DateTime?
+  strike         Decimal?       @db.Decimal(18, 2)
+  lotSize        Int            @default(1)
+  tickSize       Decimal        @db.Decimal(10, 4)
+  isin           String?
+  brokerToken    String?
+  isActive       Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+
+  watchlistItems WatchlistItem[]
+  orders         Order[]
+  positions      Position[]
+  holdings       Holding[]
+  marketTicks    MarketTick[]
+  candles        Candle[]
+
+  @@unique([symbol, exchange, expiry, strike, instrumentType])
+  @@index([segment, exchange])
+  @@index([symbol])
+}
+
+model BrokerConnection {
+  id           String     @id @default(cuid())
+  userId       String
+  brokerType   BrokerType
+  accessToken  String
+  refreshToken String?
+  apiKey       String?
+  apiSecret    String?
+  isActive     Boolean    @default(true)
+  expiresAt    DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Watchlist {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  createdAt DateTime @default(now())
+
+  user  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items WatchlistItem[]
+}
+
+model WatchlistItem {
+  id           String @id @default(cuid())
+  watchlistId  String
+  instrumentId String
+  sortOrder    Int    @default(0)
+
+  watchlist  Watchlist  @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([watchlistId, instrumentId])
+}
+
+model Order {
+  id               String      @id @default(cuid())
+  userId           String
+  paperAccountId   String
+  instrumentId     String
+  mode             TradingMode @default(PAPER)
+  side             OrderSide
+  orderType        OrderType
+  productType      ProductType
+  quantity         Int
+  price            Decimal?    @db.Decimal(18, 2)
+  triggerPrice     Decimal?    @db.Decimal(18, 2)
+  stopLoss         Decimal?    @db.Decimal(18, 2)
+  target           Decimal?    @db.Decimal(18, 2)
+  status           OrderStatus @default(PENDING)
+  filledQuantity   Int         @default(0)
+  averagePrice     Decimal?    @db.Decimal(18, 2)
+  brokerOrderId    String?
+  rejectionReason  String?
+  algoDeploymentId String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paperAccount PaperAccount @relation(fields: [paperAccountId], references: [id], onDelete: Cascade)
+  instrument   Instrument   @relation(fields: [instrumentId], references: [id])
+  trades       Trade[]
+  algoSignals  AlgoSignal[]
+
+  @@index([userId, status])
+  @@index([paperAccountId])
+  @@index([instrumentId, status])
+}
+
+model Trade {
+  id       String   @id @default(cuid())
+  orderId  String
+  quantity Int
+  price    Decimal  @db.Decimal(18, 2)
+  tradedAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model Position {
+  id             String      @id @default(cuid())
+  paperAccountId String
+  instrumentId   String
+  mode           TradingMode @default(PAPER)
+  side           OrderSide
+  quantity       Int
+  averagePrice   Decimal     @db.Decimal(18, 2)
+  productType    ProductType
+  unrealizedPL   Decimal     @default(0) @db.Decimal(18, 2)
+  stopLoss       Decimal?    @db.Decimal(18, 2)
+  target         Decimal?    @db.Decimal(18, 2)
+  openedAt       DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  paperAccount PaperAccount @relation(fields: [paperAccountId], references: [id], onDelete: Cascade)
+  instrument   Instrument   @relation(fields: [instrumentId], references: [id])
+
+  @@unique([paperAccountId, instrumentId, productType, mode])
+}
+
+model Holding {
+  id             String   @id @default(cuid())
+  paperAccountId String
+  instrumentId   String
+  quantity       Int
+  averagePrice   Decimal  @db.Decimal(18, 2)
+  updatedAt      DateTime @updatedAt
+
+  paperAccount PaperAccount @relation(fields: [paperAccountId], references: [id], onDelete: Cascade)
+  instrument   Instrument   @relation(fields: [instrumentId], references: [id])
+
+  @@unique([paperAccountId, instrumentId])
+}
+
+model TradeJournal {
+  id         String    @id @default(cuid())
+  userId     String
+  orderId    String?
+  symbol     String
+  segment    Segment
+  rangeStart Decimal?  @db.Decimal(18, 2)
+  rangeEnd   Decimal?  @db.Decimal(18, 2)
+  entryDate  DateTime?
+  entryPrice Decimal?  @db.Decimal(18, 2)
+  stopLoss   Decimal?  @db.Decimal(18, 2)
+  target     Decimal?  @db.Decimal(18, 2)
+  quantity   Int?
+  expiry     DateTime?
+  ourEntry   Decimal?  @db.Decimal(18, 2)
+  ourExit    Decimal?  @db.Decimal(18, 2)
+  plPercent  Decimal?  @db.Decimal(10, 4)
+  plAmount   Decimal?  @db.Decimal(18, 2)
+  notes      String?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model MarketTick {
+  id           String   @id @default(cuid())
+  instrumentId String
+  ltp          Decimal  @db.Decimal(18, 2)
+  open         Decimal? @db.Decimal(18, 2)
+  high         Decimal? @db.Decimal(18, 2)
+  low          Decimal? @db.Decimal(18, 2)
+  close        Decimal? @db.Decimal(18, 2)
+  volume       BigInt?
+  timestamp    DateTime
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@index([instrumentId, timestamp(sort: Desc)])
+}
+
+model Candle {
+  id           String   @id @default(cuid())
+  instrumentId String
+  interval     String
+  open         Decimal  @db.Decimal(18, 2)
+  high         Decimal  @db.Decimal(18, 2)
+  low          Decimal  @db.Decimal(18, 2)
+  close        Decimal  @db.Decimal(18, 2)
+  volume       BigInt   @default(0)
+  timestamp    DateTime
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, interval, timestamp])
+  @@index([instrumentId, interval, timestamp(sort: Desc)])
+}
+
+model Algo {
+  id          String     @id @default(cuid())
+  userId      String
+  name        String
+  description String?
+  sourceCode  String
+  status      AlgoStatus @default(DRAFT)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deployments AlgoDeployment[]
+}
+
+model AlgoDeployment {
+  id              String      @id @default(cuid())
+  algoId          String
+  paperAccountId  String
+  mode            TradingMode @default(PAPER)
+  symbols         String[]
+  config          Json
+  status          AlgoStatus  @default(DEPLOYED)
+  maxLoss         Decimal?    @db.Decimal(18, 2)
+  maxOrdersPerDay Int         @default(100)
+  startedAt       DateTime    @default(now())
+  stoppedAt       DateTime?
+
+  algo         Algo         @relation(fields: [algoId], references: [id], onDelete: Cascade)
+  paperAccount PaperAccount @relation(fields: [paperAccountId], references: [id], onDelete: Cascade)
+  logs         AlgoLog[]
+  signals      AlgoSignal[]
+}
+
+model AlgoSignal {
+  id               String   @id @default(cuid())
+  algoDeploymentId String
+  orderId          String?
+  signalType       String
+  price            Decimal  @db.Decimal(18, 2)
+  reason           String?
+  createdAt        DateTime @default(now())
+
+  deployment AlgoDeployment @relation(fields: [algoDeploymentId], references: [id], onDelete: Cascade)
+  order      Order?         @relation(fields: [orderId], references: [id])
+}
+
+model AlgoLog {
+  id               String   @id @default(cuid())
+  algoDeploymentId String
+  level            String
+  message          String
+  createdAt        DateTime @default(now())
+
+  deployment AlgoDeployment @relation(fields: [algoDeploymentId], references: [id], onDelete: Cascade)
+
+  @@index([algoDeploymentId, createdAt(sort: Desc)])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  action     String
+  resource   String
+  resourceId String?
+  details    Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([resource, resourceId])
+}

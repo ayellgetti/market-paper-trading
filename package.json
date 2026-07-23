@@ -1,0 +1,55 @@
+{
+  "name": "market-paper-trading",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Paper trading platform for learning Indian markets",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "dev": "pnpm run dev:all",
+    "dev:all": "pnpm run --parallel dev:api dev:ws dev:ingest dev:scheduler dev:algo dev:web",
+    "dev:api": "pnpm --filter @paper-trading/api dev",
+    "dev:ws": "pnpm --filter @paper-trading/ws-hub dev",
+    "dev:ingest": "pnpm --filter @paper-trading/market-ingest dev",
+    "dev:scheduler": "pnpm --filter @paper-trading/scheduler dev",
+    "dev:algo": "pnpm --filter @paper-trading/algo-runner dev",
+    "dev:web": "pnpm --filter @paper-trading/web dev",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm -r run typecheck",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "db:push": "prisma db push",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.28.0",
+    "@types/node": "^22.15.21",
+    "eslint": "^9.28.0",
+    "eslint-config-prettier": "^10.1.5",
+    "prettier": "^3.5.3",
+    "prisma": "^6.8.2",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.33.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.8.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.11.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "prisma",
+      "esbuild"
+    ]
+  }
+}
