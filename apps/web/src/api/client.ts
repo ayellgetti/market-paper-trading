@@ -47,6 +47,7 @@ export const api = {
     data: {
       riskPercent?: number;
       rewardRatio?: number;
+      startingBalance?: number;
       preferredMode?: 'PAPER' | 'LIVE';
       confirmLive?: boolean;
     },
@@ -56,6 +57,11 @@ export const api = {
     if (segment && segment !== 'ALL') params.set('segment', segment);
     return request<Instrument[]>(`/api/v1/instruments/search?${params}`);
   },
+  getWatchlist: () => request<WatchlistItem[]>('/api/v1/instruments/watchlist'),
+  getCandles: (id: string, interval: CandleInterval) =>
+    request<{ interval: string; candles: Candle[] }>(
+      `/api/v1/instruments/${id}/candles?interval=${interval}`,
+    ),
   getQuote: (id: string) => request<QuoteResponse>(`/api/v1/instruments/${id}/quote`),
   placeOrder: (data: PlaceOrderBody) =>
     request('/api/v1/orders', { method: 'POST', body: JSON.stringify(data) }),
@@ -65,7 +71,11 @@ export const api = {
     request<OrderEntry[]>(`/api/v1/orders${status ? `?status=${status}` : ''}`),
   getPositions: (accountId: string) =>
     request<Position[]>(`/api/v1/positions?accountId=${accountId}`),
-  getTrades: () => request<TradeLogEntry[]>('/api/v1/trades'),
+  squareOffPosition: (positionId: string) =>
+    request<{ positionId: string; orderId: string; message: string }>(
+      `/api/v1/positions/${positionId}/square-off`,
+      { method: 'POST' },
+    ),
   getJournal: () => request<JournalEntry[]>('/api/v1/journal'),
   getHoldings: (accountId: string) =>
     request<Holding[]>(`/api/v1/holdings?accountId=${accountId}`),
@@ -210,6 +220,22 @@ export interface Instrument {
   instrumentType?: string;
 }
 
+export type CandleInterval = '1m' | '5m' | '15m' | '1h' | '1d';
+
+export interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  simulated?: boolean;
+}
+
+export interface WatchlistItem extends Instrument {
+  ltp: number | null;
+  prevClose: number | null;
+}
+
 export interface QuoteResponse {
   instrumentId: string;
   symbol: string;
@@ -249,6 +275,7 @@ export interface Position {
   stopLoss: number | null;
   target: number | null;
   productType?: string;
+  side?: string;
   instrument: Instrument;
 }
 
@@ -265,16 +292,6 @@ export interface OrderEntry {
   averagePrice: number | null;
   createdAt: string;
   instrument: Instrument;
-}
-
-export interface TradeLogEntry {
-  id: string;
-  datetime: string;
-  action: string;
-  stock: string;
-  quantity: number;
-  price: number;
-  totalCost: number;
 }
 
 export interface JournalEntry {

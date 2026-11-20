@@ -5,19 +5,19 @@ export type NavPage =
   | 'trade'
   | 'positions'
   | 'orders'
-  | 'trades'
   | 'journal'
   | 'holdings'
+  | 'settings'
   | 'broker'
   | 'algos';
 
 const NAV: Array<{ id: NavPage; label: string; section?: string }> = [
-  { id: 'trade', label: 'Order Pad', section: 'Trading' },
+  { id: 'trade', label: 'Place Order', section: 'Trading' },
   { id: 'positions', label: 'Positions', section: 'Trading' },
   { id: 'orders', label: 'Order Book', section: 'Trading' },
-  { id: 'trades', label: 'Trade Log', section: 'Trading' },
   { id: 'journal', label: 'Journal', section: 'Trading' },
   { id: 'holdings', label: 'Holdings', section: 'Trading' },
+  { id: 'settings', label: 'Settings', section: 'Trading' },
   { id: 'broker', label: 'Broker', section: 'Connect' },
   { id: 'algos', label: 'Algo Studio', section: 'Automate' },
 ];
@@ -162,12 +162,12 @@ export function AdminLayout({
 
 export function pageTitleForNav(nav: NavPage): string {
   const titles: Record<NavPage, string> = {
-    trade: 'Order Pad',
+    trade: 'Place Order',
     positions: 'Positions',
     orders: 'Order Book',
-    trades: 'Trade Log',
     journal: 'Trade Journal',
     holdings: 'Holdings',
+    settings: 'Settings',
     broker: 'Broker Connection',
     algos: 'Algo Studio',
   };
