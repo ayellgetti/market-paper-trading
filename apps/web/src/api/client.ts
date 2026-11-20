@@ -365,7 +365,7 @@ export interface AlgoDeployment {
 }
 
 export interface BacktestRequest {
-  instrumentId: string;
+  instrumentIds: string[];
   days?: number;
   interval?: string;
   config: {
@@ -377,8 +377,19 @@ export interface BacktestRequest {
   };
 }
 
+export interface InstrumentBacktestSummary {
+  instrumentId: string;
+  symbol: string;
+  totalPnL: number;
+  winRate: number;
+  totalTrades: number;
+  candleCount: number;
+}
+
 export interface BacktestResult {
+  perInstrument?: InstrumentBacktestSummary[];
   trades: Array<{
+    symbol?: string;
     side: string;
     price: number;
     quantity: number;
@@ -393,7 +404,7 @@ export interface BacktestResult {
 
 export interface DeployRequest {
   paperAccountId: string;
-  instrumentId: string;
+  instrumentIds: string[];
   config: {
     strategyType: 'sma_crossover';
     fastPeriod?: number;

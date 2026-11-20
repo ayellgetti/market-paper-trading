@@ -3,20 +3,14 @@ import type { AuthResponse, FundsResponse } from './api/client';
 
 export type NavPage =
   | 'trade'
-  | 'positions'
-  | 'orders'
   | 'journal'
-  | 'holdings'
   | 'settings'
   | 'broker'
   | 'algos';
 
 const NAV: Array<{ id: NavPage; label: string; section?: string }> = [
   { id: 'trade', label: 'Place Order', section: 'Trading' },
-  { id: 'positions', label: 'Positions', section: 'Trading' },
-  { id: 'orders', label: 'Order Book', section: 'Trading' },
   { id: 'journal', label: 'Journal', section: 'Trading' },
-  { id: 'holdings', label: 'Holdings', section: 'Trading' },
   { id: 'settings', label: 'Settings', section: 'Trading' },
   { id: 'broker', label: 'Broker', section: 'Connect' },
   { id: 'algos', label: 'Algo Studio', section: 'Automate' },
@@ -163,10 +157,7 @@ export function AdminLayout({
 export function pageTitleForNav(nav: NavPage): string {
   const titles: Record<NavPage, string> = {
     trade: 'Place Order',
-    positions: 'Positions',
-    orders: 'Order Book',
     journal: 'Trade Journal',
-    holdings: 'Holdings',
     settings: 'Settings',
     broker: 'Broker Connection',
     algos: 'Algo Studio',

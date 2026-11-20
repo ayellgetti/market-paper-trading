@@ -1,12 +1,12 @@
 import type { PrismaClient } from '@paper-trading/db';
-import type { SMAConfig } from '@paper-trading/strategy-sdk';
+import type { SMAParams } from '@paper-trading/strategy-sdk';
 import { OrderService } from '@paper-trading/oms';
 import { Redis } from 'ioredis';
 import { SMALiveRunner } from './sma-live-runner.js';
 
 type RunnerEntry = {
   deploymentId: string;
-  instrumentId: string;
+  instrumentIds: Set<string>;
   runner: SMALiveRunner;
 };
 
@@ -38,8 +38,14 @@ export class DeploymentManager {
     for (const dep of active) {
       if (this.runners.has(dep.id)) continue;
 
-      const config = dep.config as unknown as SMAConfig;
+      const config = dep.config as unknown as SMAParams & { instrumentId?: string };
       if (config.strategyType !== 'sma_crossover') continue;
+
+      // `symbols` holds the instrument ids; older deployments only have config.instrumentId.
+      const instrumentIds = new Set(
+        dep.symbols.length > 0 ? dep.symbols : config.instrumentId ? [config.instrumentId] : [],
+      );
+      if (instrumentIds.size === 0) continue;
 
       const runner = new SMALiveRunner(
         config,
@@ -94,7 +100,7 @@ export class DeploymentManager {
 
       this.runners.set(dep.id, {
         deploymentId: dep.id,
-        instrumentId: config.instrumentId,
+        instrumentIds,
         runner,
       });
 
@@ -102,7 +108,7 @@ export class DeploymentManager {
         data: {
           algoDeploymentId: dep.id,
           level: 'INFO',
-          message: `Deployment started for ${config.strategyType}`,
+          message: `Deployment started for ${config.strategyType} on ${instrumentIds.size} instrument${instrumentIds.size === 1 ? '' : 's'}`,
         },
       });
     }
@@ -110,8 +116,8 @@ export class DeploymentManager {
 
   async onTick(instrumentId: string, ltp: number, symbol: string): Promise<void> {
     for (const entry of this.runners.values()) {
-      if (entry.instrumentId === instrumentId) {
-        await entry.runner.onTick(ltp, symbol);
+      if (entry.instrumentIds.has(instrumentId)) {
+        await entry.runner.onTick(instrumentId, ltp, symbol);
       }
     }
   }

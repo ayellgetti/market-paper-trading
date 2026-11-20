@@ -241,7 +241,7 @@ function TradingDashboard({
   const [liveBrokerOrders, setLiveBrokerOrders] = useState<BrokerOrderEntry[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [chartInterval, setChartInterval] = useState<CandleInterval>('5m');
-  const [bottomTab, setBottomTab] = useState<'positions' | 'orders'>('positions');
+  const [bottomTab, setBottomTab] = useState<'positions' | 'holdings' | 'orders'>('positions');
   const [liveTick, setLiveTick] = useState<{ ltp: number; ts: number } | null>(null);
   const [ohlc, setOhlc] = useState<{ open: number; high: number; low: number; close: number } | null>(null);
 
@@ -829,6 +829,7 @@ function TradingDashboard({
               {(
                 [
                   ['positions', `Positions${positions.length ? ` ${positions.length}` : ''}`],
+                  ['holdings', `Holdings${holdings.length ? ` ${holdings.length}` : ''}`],
                   ['orders', 'Orders'],
                 ] as const
               ).map(([id, label]) => (
@@ -890,17 +891,50 @@ function TradingDashboard({
                 </table>
               )}
 
+              {bottomTab === 'holdings' && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Symbol</th><th className="num">Qty</th><th className="num">Avg price</th>
+                      <th className="num">Last</th><th className="num">Value</th><th className="num">P/L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {holdings.length === 0 ? (
+                      <tr><td colSpan={6} className="empty">No holdings — CNC positions settle T+1</td></tr>
+                    ) : (
+                      holdings.map((h) => {
+                        const ltpNow = quotes[h.instrument.id];
+                        const pl = ltpNow != null ? (ltpNow - h.averagePrice) * h.quantity : null;
+                        return (
+                          <tr key={h.id} className="clickable" onClick={() => void selectInstrument(h.instrument)}>
+                            <td>{h.instrument.symbol}</td>
+                            <td className="num">{h.quantity}</td>
+                            <td className="num">{formatINR(h.averagePrice)}</td>
+                            <td className="num">{ltpNow != null ? formatINR(ltpNow) : '—'}</td>
+                            <td className="num">{ltpNow != null ? formatINR(ltpNow * h.quantity) : '—'}</td>
+                            <td className={`num ${pl == null ? '' : pl < 0 ? 'loss' : 'profit'}`}>
+                              {pl != null ? formatINR(pl) : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              )}
+
               {bottomTab === 'orders' && (
                 <table>
                   <thead>
                     <tr>
-                      <th>Time</th><th>Symbol</th><th>Side</th><th>Type</th><th>Product</th>
+                      <th>Time</th><th>Symbol</th><th>Side</th><th>Type</th><th>Product</th><th>Mode</th>
                       <th className="num">Qty</th><th className="num">Price</th><th>Status</th><th></th>
                     </tr>
                   </thead>
                   <tbody>
                     {orders.length === 0 ? (
-                      <tr><td colSpan={9} className="empty">No orders</td></tr>
+                      <tr><td colSpan={10} className="empty">No orders</td></tr>
                     ) : (
                       orders.map((o) => (
                         <tr key={o.id}>
@@ -909,6 +943,7 @@ function TradingDashboard({
                           <td className={o.side === 'SELL' ? 'loss' : 'profit'}>{o.side}</td>
                           <td>{o.orderType}</td>
                           <td>{o.productType}</td>
+                          <td><span className={`status status-${(o.mode ?? 'PAPER').toLowerCase()}`}>{o.mode ?? 'PAPER'}</span></td>
                           <td className="num">{o.quantity}</td>
                           <td className="num">
                             {o.averagePrice != null ? formatINR(o.averagePrice) : o.price != null ? formatINR(o.price) : '—'}
@@ -929,109 +964,6 @@ function TradingDashboard({
             </div>
           </section>
         </div>
-      )}
-
-      {page === 'positions' && (
-        <section className="panel">
-          <div className="order-header" style={{ marginBottom: '1rem' }}>
-            <h2 style={{ margin: 0 }}>Positions</h2>
-            {positions.some((p) => p.productType === 'MIS') && (
-              <button type="button" className="btn-sell btn-sm" onClick={() => void squareOffAllMis()}>
-                Square Off All MIS
-              </button>
-            )}
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Segment</th>
-                <th>Product</th>
-                <th>Avg Price</th>
-                <th>Qty</th>
-                <th>LTP</th>
-                <th>Unrealized P/L</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {positions.length === 0 ? (
-                <tr><td colSpan={9} className="empty">No open positions</td></tr>
-              ) : (
-                positions.map((p) => (
-                  <tr key={p.id}>
-                    <td>{p.instrument.symbol}</td>
-                    <td>{p.side ?? 'BUY'}</td>
-                    <td>{p.instrument.segment}</td>
-                    <td>{p.productType}</td>
-                    <td>{formatINR(p.averagePrice)}</td>
-                    <td>{p.quantity}</td>
-                    <td>{quotes[p.instrumentId] != null ? formatINR(quotes[p.instrumentId]) : '—'}</td>
-                    <td className={p.unrealizedPL < 0 ? 'loss' : 'profit'}>{formatINR(p.unrealizedPL)}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="btn-sm btn-sell"
-                        onClick={() => void squareOff(p.id, p.instrument.symbol)}
-                      >
-                        Square Off
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </section>
-      )}
-
-      {page === 'orders' && (
-        <section className="panel">
-          <h2>Order Book</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Symbol</th>
-                <th>Segment</th>
-                <th>Side</th>
-                <th>Type</th>
-                <th>Product</th>
-                <th>Mode</th>
-                <th>Qty</th>
-                <th>Price</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {orders.length === 0 ? (
-                <tr><td colSpan={11} className="empty">No orders</td></tr>
-              ) : (
-                orders.map((o) => (
-                  <tr key={o.id}>
-                    <td>{new Date(o.createdAt).toLocaleString('en-IN')}</td>
-                    <td>{o.instrument.symbol}</td>
-                    <td>{o.instrument.segment}</td>
-                    <td>{o.side}</td>
-                    <td>{o.orderType}</td>
-                    <td>{o.productType}</td>
-                    <td><span className={`status status-${(o.mode ?? 'PAPER').toLowerCase()}`}>{o.mode ?? 'PAPER'}</span></td>
-                    <td>{o.quantity}</td>
-                    <td>{o.averagePrice != null ? formatINR(o.averagePrice) : o.price != null ? formatINR(o.price) : '—'}</td>
-                    <td><span className={`status status-${o.status.toLowerCase()}`}>{o.status}</span></td>
-                    <td>
-                      {(o.status === 'OPEN' || o.status === 'PENDING') && (
-                        <button type="button" className="btn-sm" onClick={() => void cancelOrder(o.id)}>Cancel</button>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </section>
       )}
 
       {page === 'journal' && (
@@ -1097,43 +1029,6 @@ function TradingDashboard({
           </div>
         </section>
       )}
-
-      {page === 'holdings' && (
-        <section className="panel">
-          <h2>Holdings (Delivery)</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Segment</th>
-                <th>Quantity</th>
-                <th>Avg Price</th>
-                <th>LTP</th>
-                <th>Value</th>
-              </tr>
-            </thead>
-            <tbody>
-              {holdings.length === 0 ? (
-                <tr><td colSpan={6} className="empty">No holdings — CNC positions settle T+1</td></tr>
-              ) : (
-                holdings.map((h) => {
-                  const ltpNow = quotes[h.instrument.id];
-                  return (
-                    <tr key={h.id}>
-                      <td>{h.instrument.symbol}</td>
-                      <td>{h.instrument.segment}</td>
-                      <td>{h.quantity}</td>
-                      <td>{formatINR(h.averagePrice)}</td>
-                      <td>{ltpNow != null ? formatINR(ltpNow) : '—'}</td>
-                      <td>{ltpNow != null ? formatINR(ltpNow * h.quantity) : '—'}</td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </section>
-      )}
     </div>
   );
 }
@@ -1145,9 +1040,9 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
   const [algo, setAlgo] = useState<AlgoDetail | null>(null);
   const [sourceCode, setSourceCode] = useState('');
   const [name, setName] = useState('');
-  const [search, setSearch] = useState('RELIANCE');
+  const [search, setSearch] = useState('');
   const [results, setResults] = useState<Instrument[]>([]);
-  const [instrument, setInstrument] = useState<Instrument | null>(null);
+  const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [fastPeriod, setFastPeriod] = useState(9);
   const [slowPeriod, setSlowPeriod] = useState(21);
   const [quantity, setQuantity] = useState(10);
@@ -1261,8 +1156,8 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
   };
 
   const runBacktest = async () => {
-    if (!selectedId || !instrument) {
-      setMessage('Select an instrument first');
+    if (!selectedId || instruments.length === 0) {
+      setMessage('Add at least one instrument first');
       return;
     }
     setLoading(true);
@@ -1270,7 +1165,7 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
     setBacktest(null);
     try {
       const result = await api.backtestAlgo(selectedId, {
-        instrumentId: instrument.id,
+        instrumentIds: instruments.map((i) => i.id),
         days: 30,
         interval: '5m',
         config: {
@@ -1282,7 +1177,9 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
         },
       });
       setBacktest(result);
-      setMessage(`Backtest done — ${result.candleCount} candles, P/L ${formatINR(result.totalPnL)}`);
+      setMessage(
+        `Backtest done — ${instruments.length} instrument${instruments.length === 1 ? '' : 's'}, ${result.candleCount} candles, P/L ${formatINR(result.totalPnL)}`,
+      );
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Backtest failed');
     } finally {
@@ -1291,8 +1188,8 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
   };
 
   const deploy = async () => {
-    if (!selectedId || !instrument) {
-      setMessage('Select an instrument first');
+    if (!selectedId || instruments.length === 0) {
+      setMessage('Add at least one instrument first');
       return;
     }
     setLoading(true);
@@ -1300,7 +1197,7 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
     try {
       const dep = await api.deployAlgo(selectedId, {
         paperAccountId: accountId,
-        instrumentId: instrument.id,
+        instrumentIds: instruments.map((i) => i.id),
         config: {
           strategyType: 'sma_crossover',
           fastPeriod,
@@ -1312,7 +1209,7 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
         maxOrdersPerDay: maxOrders,
       });
       setActiveDeploymentId(dep.id);
-      setMessage(`Deployed — deployment ${dep.id.slice(0, 8)}…`);
+      setMessage(`Deployed on ${instruments.length} instrument${instruments.length === 1 ? '' : 's'} — deployment ${dep.id.slice(0, 8)}…`);
       await loadAlgo(selectedId);
       await refreshList();
     } catch (err) {
@@ -1334,11 +1231,14 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
     }
   };
 
-  const selectInstrument = (inst: Instrument) => {
-    setInstrument(inst);
-    setSearch(inst.symbol);
+  const addInstrument = (inst: Instrument) => {
+    setInstruments((prev) => (prev.some((i) => i.id === inst.id) ? prev : [...prev, inst]));
+    setSearch('');
     setResults([]);
-    setProductType(defaultProductForSegment(inst.segment) === 'CNC' ? 'MIS' : 'MIS');
+  };
+
+  const removeInstrument = (id: string) => {
+    setInstruments((prev) => prev.filter((i) => i.id !== id));
   };
 
   return (
@@ -1412,9 +1312,9 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
                 <section className="panel">
                   <h2>Deploy Config</h2>
                   <label>
-                    Instrument
+                    Instruments
                     <input
-                      placeholder="Search RELIANCE"
+                      placeholder="Search and add (e.g. RELIANCE, TCS)"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                     />
@@ -1423,7 +1323,7 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
                     <ul className="search-results">
                       {results.map((inst) => (
                         <li key={inst.id}>
-                          <button type="button" onClick={() => selectInstrument(inst)}>
+                          <button type="button" onClick={() => addInstrument(inst)}>
                             <strong>{inst.symbol}</strong>
                             <span className="inst-name">{inst.name}</span>
                           </button>
@@ -1431,7 +1331,24 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
                       ))}
                     </ul>
                   )}
-                  {instrument && <p className="selected-inst">Selected: <strong>{instrument.symbol}</strong></p>}
+                  <div className="chip-list">
+                    {instruments.length === 0 ? (
+                      <span className="chip-hint">No instruments added yet</span>
+                    ) : (
+                      instruments.map((inst) => (
+                        <span key={inst.id} className="chip">
+                          {inst.symbol}
+                          <button
+                            type="button"
+                            aria-label={`Remove ${inst.symbol}`}
+                            onClick={() => removeInstrument(inst.id)}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
                   <div className="grid-2">
                     <label>
                       Fast SMA
@@ -1488,10 +1405,33 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
                       </div>
                     </div>
                   </div>
+                  {backtest.perInstrument && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Instrument</th>
+                          <th>Trades</th>
+                          <th>Win Rate</th>
+                          <th>P/L</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {backtest.perInstrument.map((p) => (
+                          <tr key={p.instrumentId}>
+                            <td>{p.symbol}</td>
+                            <td>{p.totalTrades}</td>
+                            <td>{p.winRate.toFixed(1)}%</td>
+                            <td className={p.totalPnL < 0 ? 'loss' : 'profit'}>{formatINR(p.totalPnL)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                   <table>
                     <thead>
                       <tr>
                         <th>Time</th>
+                        {backtest.perInstrument && <th>Symbol</th>}
                         <th>Side</th>
                         <th>Price</th>
                         <th>Qty</th>
@@ -1502,6 +1442,7 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
                       {backtest.trades.slice(-20).map((t, i) => (
                         <tr key={i}>
                           <td>{new Date(t.timestamp).toLocaleString('en-IN')}</td>
+                          {backtest.perInstrument && <td>{t.symbol}</td>}
                           <td>{t.side}</td>
                           <td>{formatINR(t.price)}</td>
                           <td>{t.quantity}</td>

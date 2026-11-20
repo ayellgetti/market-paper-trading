@@ -1,4 +1,4 @@
-import type { SMAConfig } from '@paper-trading/strategy-sdk';
+import type { SMAParams } from '@paper-trading/strategy-sdk';
 import { computeSMA } from '@paper-trading/strategy-sdk';
 import type { PrismaClient } from '@paper-trading/db';
 import { OrderService } from '@paper-trading/oms';
@@ -11,13 +11,21 @@ export interface LiveRunnerCallbacks {
   onStopped: (reason: string) => Promise<void>;
 }
 
+interface InstrumentState {
+  prices: number[];
+  positionOpen: boolean;
+}
+
+/**
+ * One runner per deployment. Price history and open-position state are tracked
+ * per instrument; the circuit breaker (max loss / max orders) is shared.
+ */
 export class SMALiveRunner {
-  private prices: number[] = [];
-  private positionOpen = false;
+  private state = new Map<string, InstrumentState>();
   private breaker: CircuitBreaker;
 
   constructor(
-    private config: SMAConfig,
+    private config: SMAParams,
     private deploymentId: string,
     private userId: string,
     private paperAccountId: string,
@@ -31,31 +39,38 @@ export class SMALiveRunner {
     this.breaker = new CircuitBreaker(maxLoss, maxOrdersPerDay);
   }
 
-  async onTick(ltp: number, symbol: string): Promise<void> {
+  async onTick(instrumentId: string, ltp: number, symbol: string): Promise<void> {
     if (this.breaker.isTripped()) {
       const reason = this.breaker.tripReason() ?? 'Circuit breaker';
       await this.callbacks.onStopped(reason);
       return;
     }
 
-    this.prices.push(ltp);
-    if (this.prices.length < this.config.slowPeriod + 1) return;
+    let st = this.state.get(instrumentId);
+    if (!st) {
+      st = { prices: [], positionOpen: false };
+      this.state.set(instrumentId, st);
+    }
 
-    const fast = computeSMA(this.prices, this.config.fastPeriod);
-    const slow = computeSMA(this.prices, this.config.slowPeriod);
-    const prevFast = computeSMA(this.prices.slice(0, -1), this.config.fastPeriod);
-    const prevSlow = computeSMA(this.prices.slice(0, -1), this.config.slowPeriod);
+    st.prices.push(ltp);
+    if (st.prices.length < this.config.slowPeriod + 1) return;
 
-    if (prevFast <= prevSlow && fast > slow && !this.positionOpen) {
-      await this.executeSignal('BUY', ltp, `Fast SMA ${fast.toFixed(2)} crossed above ${slow.toFixed(2)}`, symbol);
-      this.positionOpen = true;
-    } else if (prevFast >= prevSlow && fast < slow && this.positionOpen) {
-      await this.executeSignal('SELL', ltp, `Fast SMA ${fast.toFixed(2)} crossed below ${slow.toFixed(2)}`, symbol);
-      this.positionOpen = false;
+    const fast = computeSMA(st.prices, this.config.fastPeriod);
+    const slow = computeSMA(st.prices, this.config.slowPeriod);
+    const prevFast = computeSMA(st.prices.slice(0, -1), this.config.fastPeriod);
+    const prevSlow = computeSMA(st.prices.slice(0, -1), this.config.slowPeriod);
+
+    if (prevFast <= prevSlow && fast > slow && !st.positionOpen) {
+      await this.executeSignal(instrumentId, 'BUY', ltp, `Fast SMA ${fast.toFixed(2)} crossed above ${slow.toFixed(2)}`, symbol);
+      st.positionOpen = true;
+    } else if (prevFast >= prevSlow && fast < slow && st.positionOpen) {
+      await this.executeSignal(instrumentId, 'SELL', ltp, `Fast SMA ${fast.toFixed(2)} crossed below ${slow.toFixed(2)}`, symbol);
+      st.positionOpen = false;
     }
   }
 
   private async executeSignal(
+    instrumentId: string,
     side: 'BUY' | 'SELL',
     price: number,
     reason: string,
@@ -68,7 +83,7 @@ export class SMALiveRunner {
       const order = await this.orderService.placeOrder({
         userId: this.userId,
         paperAccountId: this.paperAccountId,
-        instrumentId: this.config.instrumentId,
+        instrumentId,
         side,
         orderType: 'MARKET',
         productType: this.config.productType,
@@ -82,7 +97,7 @@ export class SMALiveRunner {
       });
 
       this.breaker.recordOrder();
-      await this.publishEvent('order', { orderId: order.id, side, price });
+      await this.publishEvent('order', { orderId: order.id, instrumentId, symbol, side, price });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Order failed';
       await this.callbacks.onLog('ERROR', msg);
