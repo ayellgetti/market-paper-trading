@@ -9,7 +9,7 @@ export type NavPage =
   | 'algos';
 
 const NAV: Array<{ id: NavPage; label: string; section?: string }> = [
-  { id: 'trade', label: 'Place Order', section: 'Trading' },
+  { id: 'trade', label: 'Home', section: 'Trading' },
   { id: 'journal', label: 'Journal', section: 'Trading' },
   { id: 'settings', label: 'Settings', section: 'Trading' },
   { id: 'broker', label: 'Broker', section: 'Connect' },
@@ -156,7 +156,7 @@ export function AdminLayout({
 
 export function pageTitleForNav(nav: NavPage): string {
   const titles: Record<NavPage, string> = {
-    trade: 'Place Order',
+    trade: 'Home',
     journal: 'Trade Journal',
     settings: 'Settings',
     broker: 'Broker Connection',
