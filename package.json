@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm -r run build",
     "dev": "pnpm run dev:all",
-    "dev:all": "pnpm run --parallel dev:api dev:ws dev:ingest dev:scheduler dev:algo dev:web",
+    "dev:all": "set -a && . ./.env && set +a && pnpm --parallel --filter @paper-trading/api --filter @paper-trading/ws-hub --filter @paper-trading/market-ingest --filter @paper-trading/scheduler --filter @paper-trading/algo-runner --filter @paper-trading/web run dev",
     "dev:api": "pnpm --filter @paper-trading/api dev",
     "dev:ws": "pnpm --filter @paper-trading/ws-hub dev",
     "dev:ingest": "pnpm --filter @paper-trading/market-ingest dev",

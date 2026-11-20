@@ -92,12 +92,25 @@ export interface SMAConfig {
   productType: 'CNC' | 'MIS' | 'NRML';
 }
 
+/** Strategy parameters shared by every instrument a deployment trades. */
+export type SMAParams = Omit<SMAConfig, 'instrumentId'>;
+
 export interface BacktestTrade {
+  symbol?: string;
   side: 'BUY' | 'SELL';
   price: number;
   quantity: number;
   timestamp: Date;
   pnl?: number;
+}
+
+export interface InstrumentBacktestSummary {
+  instrumentId: string;
+  symbol: string;
+  totalPnL: number;
+  winRate: number;
+  totalTrades: number;
+  candleCount: number;
 }
 
 export interface BacktestResult {
@@ -106,6 +119,8 @@ export interface BacktestResult {
   winRate: number;
   totalTrades: number;
   candleCount: number;
+  /** Present when the backtest covered more than one instrument. */
+  perInstrument?: InstrumentBacktestSummary[];
 }
 
 export function computeSMA(prices: number[], period: number): number {

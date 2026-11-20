@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@paper-trading/db';
 import { DEFAULT_SMA_SOURCE } from '@paper-trading/strategy-sdk';
 import { runBacktestForAlgo } from '@paper-trading/algo-runner';
-import type { SMAConfig } from '@paper-trading/strategy-sdk';
+import type { SMAParams } from '@paper-trading/strategy-sdk';
 
 const createAlgoSchema = z.object({
   name: z.string().min(1),
@@ -18,9 +18,22 @@ const updateAlgoSchema = z.object({
   status: z.enum(['DRAFT', 'BACKTESTING', 'DEPLOYED', 'PAUSED', 'STOPPED']).optional(),
 });
 
+const MAX_INSTRUMENTS = 20;
+
+// A strategy can trade several instruments. `instrumentId` is the legacy single-instrument form.
+const instrumentFields = {
+  instrumentIds: z.array(z.string()).min(1).max(MAX_INSTRUMENTS).optional(),
+  instrumentId: z.string().optional(),
+};
+
+function resolveInstrumentIds(body: { instrumentIds?: string[]; instrumentId?: string }): string[] {
+  const ids = body.instrumentIds ?? (body.instrumentId ? [body.instrumentId] : []);
+  return [...new Set(ids)];
+}
+
 const deploySchema = z.object({
   paperAccountId: z.string(),
-  instrumentId: z.string(),
+  ...instrumentFields,
   config: z.object({
     strategyType: z.literal('sma_crossover'),
     fastPeriod: z.number().int().min(2).default(9),
@@ -33,7 +46,7 @@ const deploySchema = z.object({
 });
 
 const backtestSchema = z.object({
-  instrumentId: z.string(),
+  ...instrumentFields,
   days: z.number().int().min(1).max(90).default(30),
   interval: z.string().default('5m'),
   config: z.object({
@@ -44,6 +57,13 @@ const backtestSchema = z.object({
     productType: z.enum(['CNC', 'MIS', 'NRML']).default('MIS'),
   }),
 });
+
+async function validateInstruments(ids: string[]): Promise<string | null> {
+  if (ids.length === 0) return 'Select at least one instrument';
+  if (ids.length > MAX_INSTRUMENTS) return `At most ${MAX_INSTRUMENTS} instruments per strategy`;
+  const found = await prisma.instrument.count({ where: { id: { in: ids }, isActive: true } });
+  return found === ids.length ? null : 'One or more instruments were not found';
+}
 
 export async function algoRoutes(app: FastifyInstance): Promise<void> {
   app.post('/kill-switch', { preHandler: [app.authenticate] }, async (request) => {
@@ -142,11 +162,14 @@ export async function algoRoutes(app: FastifyInstance): Promise<void> {
     const algo = await prisma.algo.findFirst({ where: { id, userId } });
     if (!algo) return reply.status(404).send({ error: 'Algo not found' });
 
+    const instrumentIds = resolveInstrumentIds(body);
+    const invalid = await validateInstruments(instrumentIds);
+    if (invalid) return reply.status(400).send({ error: invalid });
+
     await prisma.algo.update({ where: { id }, data: { status: 'BACKTESTING' } });
 
-    const config: SMAConfig = {
+    const config: SMAParams = {
       strategyType: 'sma_crossover',
-      instrumentId: body.instrumentId,
       fastPeriod: body.config.fastPeriod,
       slowPeriod: body.config.slowPeriod,
       quantity: body.config.quantity,
@@ -154,7 +177,7 @@ export async function algoRoutes(app: FastifyInstance): Promise<void> {
     };
 
     try {
-      const result = await runBacktestForAlgo(prisma, config, body.days, body.interval);
+      const result = await runBacktestForAlgo(prisma, config, instrumentIds, body.days, body.interval);
       await prisma.algo.update({ where: { id }, data: { status: 'DRAFT' } });
       return result;
     } catch (err) {
@@ -177,9 +200,12 @@ export async function algoRoutes(app: FastifyInstance): Promise<void> {
     });
     if (!account) return reply.status(404).send({ error: 'Account not found' });
 
-    const config: SMAConfig = {
+    const instrumentIds = resolveInstrumentIds(body);
+    const invalid = await validateInstruments(instrumentIds);
+    if (invalid) return reply.status(400).send({ error: invalid });
+
+    const config: SMAParams = {
       strategyType: 'sma_crossover',
-      instrumentId: body.instrumentId,
       fastPeriod: body.config.fastPeriod,
       slowPeriod: body.config.slowPeriod,
       quantity: body.config.quantity,
@@ -191,7 +217,7 @@ export async function algoRoutes(app: FastifyInstance): Promise<void> {
         algoId: id,
         paperAccountId: body.paperAccountId,
         mode: 'PAPER',
-        symbols: [body.instrumentId],
+        symbols: instrumentIds,
         config: config as object,
         status: 'DEPLOYED',
         maxLoss: body.maxLoss,

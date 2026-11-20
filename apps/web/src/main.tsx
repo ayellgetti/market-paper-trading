@@ -1,5 +1,6 @@
 import { StrictMode, useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { ThemeToggle } from './theme';
 import {
   api,
   clearToken,
@@ -17,6 +18,7 @@ import {
   type BacktestResult,
   type BrokerConnection,
   type BrokerOrderEntry,
+  type CandleInterval,
   type FundsResponse,
   type Holding,
   type Instrument,
@@ -25,9 +27,10 @@ import {
   type Position,
   type QuoteTick,
   type Segment,
-  type TradeLogEntry,
+  type WatchlistItem,
 } from './api/client';
 import './styles.css';
+import { INTERVALS, PriceChart } from './PriceChart';
 import { AdminLayout, pageTitleForNav, type NavPage } from './AdminLayout';
 
 function formatINR(value: number): string {
@@ -41,6 +44,101 @@ function formatINR(value: number): string {
 function formatDate(d: string | null): string {
   if (!d) return '—';
   return new Date(d).toLocaleDateString('en-IN');
+}
+
+/** Intraday price-band risk template (suggested stop & 1.5R target). */
+const INTRADAY_RISK_BANDS: Array<{
+  min: number;
+  max: number;
+  label: string;
+  stopPercent: number;
+  targetPercent: number;
+}> = [
+  { min: 0, max: 100, label: '₹0–100', stopPercent: 2.0, targetPercent: 3.0 },
+  { min: 100, max: 200, label: '₹100–200', stopPercent: 2.0, targetPercent: 3.0 },
+  { min: 200, max: 300, label: '₹200–300', stopPercent: 1.5, targetPercent: 2.25 },
+  { min: 300, max: 400, label: '₹300–400', stopPercent: 1.5, targetPercent: 2.25 },
+  { min: 400, max: 500, label: '₹400–500', stopPercent: 1.5, targetPercent: 2.25 },
+  { min: 500, max: 1000, label: '₹500–1,000', stopPercent: 1.0, targetPercent: 1.5 },
+  { min: 1000, max: 1500, label: '₹1,000–1,500', stopPercent: 0.75, targetPercent: 1.125 },
+  { min: 1500, max: 2000, label: '₹1,500–2,000', stopPercent: 0.75, targetPercent: 1.125 },
+  { min: 2000, max: 3000, label: '₹2,000–3,000', stopPercent: 0.75, targetPercent: 1.125 },
+  { min: 3000, max: 4000, label: '₹3,000–4,000', stopPercent: 0.5, targetPercent: 0.75 },
+  { min: 4000, max: 5000, label: '₹4,000–5,000', stopPercent: 0.5, targetPercent: 0.75 },
+  { min: 5000, max: 10000, label: '₹5,000–10,000', stopPercent: 0.5, targetPercent: 0.75 },
+  { min: 10000, max: 20000, label: '₹10,000–20,000', stopPercent: 0.5, targetPercent: 0.75 },
+  { min: 20000, max: 100000, label: '₹20,000–100,000', stopPercent: 0.5, targetPercent: 0.75 },
+];
+
+function lookupIntradayRisk(entry: number) {
+  const band =
+    INTRADAY_RISK_BANDS.find((b) => entry >= b.min && entry < b.max) ??
+    INTRADAY_RISK_BANDS[INTRADAY_RISK_BANDS.length - 1];
+  return band;
+}
+
+type RiskLevels = {
+  stopPercent: number;
+  targetPercent: number;
+  riskPerUnit: number;
+  rewardPerUnit: number;
+  stopLoss: number;
+  target: number;
+  bandLabel: string;
+  source: 'intraday-table' | 'settings';
+};
+
+function calcRiskLevels(
+  side: 'BUY' | 'SELL',
+  entry: number,
+  opts: { productType: 'CNC' | 'MIS' | 'NRML'; riskPercent: number; rewardRatio: number },
+): RiskLevels | null {
+  if (entry <= 0) return null;
+
+  let stopPercent: number;
+  let targetPercent: number;
+  let bandLabel: string;
+  let source: RiskLevels['source'];
+
+  if (opts.productType === 'MIS') {
+    const band = lookupIntradayRisk(entry);
+    stopPercent = band.stopPercent;
+    targetPercent = band.targetPercent;
+    bandLabel = band.label;
+    source = 'intraday-table';
+  } else {
+    if (opts.riskPercent <= 0) return null;
+    stopPercent = opts.riskPercent;
+    targetPercent = opts.riskPercent * opts.rewardRatio;
+    bandLabel = 'Settings';
+    source = 'settings';
+  }
+
+  const riskPerUnit = entry * (stopPercent / 100);
+  const rewardPerUnit = entry * (targetPercent / 100);
+
+  if (side === 'BUY') {
+    return {
+      stopPercent,
+      targetPercent,
+      riskPerUnit,
+      rewardPerUnit,
+      stopLoss: Math.max(0.05, entry - riskPerUnit),
+      target: entry + rewardPerUnit,
+      bandLabel,
+      source,
+    };
+  }
+  return {
+    stopPercent,
+    targetPercent,
+    riskPerUnit,
+    rewardPerUnit,
+    stopLoss: entry + riskPerUnit,
+    target: Math.max(0.05, entry - rewardPerUnit),
+    bandLabel,
+    source,
+  };
 }
 
 function AuthScreen({ onAuth }: { onAuth: (res: AuthResponse) => void }) {
@@ -118,9 +216,10 @@ function TradingDashboard({
 }) {
   const accountId = auth.account.id;
   const [funds, setFunds] = useState<FundsResponse | null>(null);
+  const [accountAmount, setAccountAmount] = useState(Number(auth.account.startingBalance));
   const [riskPercent, setRiskPercent] = useState(Number(auth.account.riskPercent));
   const [rewardRatio, setRewardRatio] = useState(Number(auth.account.rewardRatio));
-  const [segmentFilter, setSegmentFilter] = useState<Segment>('ALL');
+  const [segmentFilter] = useState<Segment>('ALL');
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<Instrument[]>([]);
   const [selected, setSelected] = useState<Instrument | null>(null);
@@ -134,16 +233,31 @@ function TradingDashboard({
   const [productType, setProductType] = useState<'CNC' | 'MIS' | 'NRML'>('CNC');
   const [positions, setPositions] = useState<Position[]>([]);
   const [orders, setOrders] = useState<OrderEntry[]>([]);
-  const [trades, setTrades] = useState<TradeLogEntry[]>([]);
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [message, setMessage] = useState('');
   const [quotes, setQuotes] = useState<Record<string, number>>({});
   const [brokerConnections, setBrokerConnections] = useState<BrokerConnection[]>([]);
   const [liveBrokerOrders, setLiveBrokerOrders] = useState<BrokerOrderEntry[]>([]);
+  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [chartInterval, setChartInterval] = useState<CandleInterval>('5m');
+  const [bottomTab, setBottomTab] = useState<'positions' | 'holdings' | 'orders'>('positions');
+  const [liveTick, setLiveTick] = useState<{ ltp: number; ts: number } | null>(null);
+  const [ohlc, setOhlc] = useState<{ open: number; high: number; low: number; close: number } | null>(null);
 
   const isDerivative = selected != null && selected.segment !== 'EQUITY';
   const activeBroker = brokerConnections.find((c) => c.isActive);
+  const entryPrice =
+    orderType === 'LIMIT' && price ? Number(price) : ltp != null ? ltp : null;
+
+  const calcLevels = useCallback(
+    (side: 'BUY' | 'SELL', entry: number) =>
+      calcRiskLevels(side, entry, { productType, riskPercent, rewardRatio }),
+    [productType, riskPercent, rewardRatio],
+  );
+
+  const previewLevels =
+    entryPrice != null && entryPrice > 0 ? calcLevels('BUY', entryPrice) : null;
 
   const refreshBrokers = useCallback(async () => {
     try {
@@ -159,20 +273,19 @@ function TradingDashboard({
   }, [tradingMode]);
 
   const refresh = useCallback(async () => {
-    const [f, p, t, o, j, h] = await Promise.all([
+    const [f, p, o, j, h] = await Promise.all([
       api.getFunds(accountId),
       api.getPositions(accountId),
-      api.getTrades(),
       api.getOrders(),
       api.getJournal(),
       api.getHoldings(accountId),
     ]);
     setFunds(f);
     setPositions(p);
-    setTrades(t);
     setOrders(o);
     setJournal(j);
     setHoldings(h);
+    return f;
   }, [accountId]);
 
   useEffect(() => {
@@ -188,10 +301,28 @@ function TradingDashboard({
   useEffect(() => {
     const ws = connectQuotes((tick: QuoteTick) => {
       setQuotes((prev) => ({ ...prev, [tick.instrumentId]: tick.ltp }));
-      if (selected?.id === tick.instrumentId) setLtp(tick.ltp);
+      if (selected?.id === tick.instrumentId) {
+        setLtp(tick.ltp);
+        setLiveTick({ ltp: tick.ltp, ts: Date.parse(tick.timestamp) || Date.now() });
+      }
     });
     return () => ws.close();
   }, [selected?.id]);
+
+  useEffect(() => {
+    if (page !== 'trade') return;
+    void api
+      .getWatchlist()
+      .then((items) => {
+        setWatchlist(items);
+        if (!selected && items.length > 0) {
+          const first = items.find((i) => i.symbol === 'RELIANCE') ?? items[0];
+          void selectInstrument(first);
+        }
+      })
+      .catch(() => setWatchlist([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
   useEffect(() => {
     if (!search.trim()) {
@@ -207,9 +338,27 @@ function TradingDashboard({
     return () => clearTimeout(timer);
   }, [search, segmentFilter]);
 
+  useEffect(() => {
+    if (!selected || entryPrice == null || entryPrice <= 0) {
+      setStopLoss('');
+      setTarget('');
+      return;
+    }
+    const levels = calcLevels('BUY', entryPrice);
+    if (!levels) {
+      setStopLoss('');
+      setTarget('');
+      return;
+    }
+    setStopLoss(levels.stopLoss.toFixed(2));
+    setTarget(levels.target.toFixed(2));
+  }, [selected, entryPrice, calcLevels]);
+
   const selectInstrument = async (inst: Instrument) => {
     setSelected(inst);
-    setSearch(inst.symbol);
+    setLiveTick(null);
+    setOhlc(null);
+    setSearch('');
     setResults([]);
     setProductType(defaultProductForSegment(inst.segment));
     if (inst.lotSize && inst.lotSize > 1) setLots(1);
@@ -221,10 +370,23 @@ function TradingDashboard({
     }
   };
 
-  const saveRiskSettings = async () => {
-    await api.updateAccount(accountId, { riskPercent, rewardRatio });
-    await refresh();
-    setMessage('Risk settings saved');
+  const saveSettings = async () => {
+    try {
+      await api.updateAccount(accountId, {
+        startingBalance: accountAmount,
+        riskPercent,
+        rewardRatio,
+      });
+      const f = await refresh();
+      if (f) {
+        setAccountAmount(f.total);
+        setRiskPercent(f.riskPercent);
+        setRewardRatio(f.rewardRatio);
+      }
+      setMessage('Settings saved');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Failed to save settings');
+    }
   };
 
   const placeOrder = async (side: 'BUY' | 'SELL') => {
@@ -237,6 +399,14 @@ function TradingDashboard({
     }
     setMessage('');
     try {
+      const entry = entryPrice;
+      const levels = entry != null && entry > 0 ? calcLevels(side, entry) : null;
+      const sl = levels ? levels.stopLoss : stopLoss ? Number(stopLoss) : undefined;
+      const tg = levels ? levels.target : target ? Number(target) : undefined;
+      if (levels) {
+        setStopLoss(levels.stopLoss.toFixed(2));
+        setTarget(levels.target.toFixed(2));
+      }
       await api.placeOrder({
         paperAccountId: accountId,
         instrumentId: selected.id,
@@ -247,8 +417,8 @@ function TradingDashboard({
         confirmLive: tradingMode === 'LIVE' ? true : undefined,
         ...(isDerivative ? { lots } : { quantity }),
         price: orderType === 'LIMIT' && price ? Number(price) : undefined,
-        stopLoss: stopLoss ? Number(stopLoss) : undefined,
-        target: target ? Number(target) : undefined,
+        stopLoss: sl,
+        target: tg,
       });
       setMessage(`${tradingMode} ${side} order placed for ${selected.symbol}`);
       await refresh();
@@ -277,8 +447,36 @@ function TradingDashboard({
     }
   };
 
-  const riskAmount = funds ? (funds.available + funds.used) * (riskPercent / 100) : 0;
-  const rewardAmount = riskAmount * rewardRatio;
+  const squareOff = async (positionId: string, symbol: string) => {
+    const ok = window.confirm(`Square off ${symbol}? This places a market order to close the position.`);
+    if (!ok) return;
+    setMessage('');
+    try {
+      const res = await api.squareOffPosition(positionId);
+      setMessage(res.message || `Squared off ${symbol}`);
+      await refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Square-off failed');
+    }
+  };
+
+  const squareOffAllMis = async () => {
+    const mis = positions.filter((p) => p.productType === 'MIS');
+    if (mis.length === 0) {
+      setMessage('No MIS positions to square off');
+      return;
+    }
+    const ok = window.confirm(`Square off all ${mis.length} MIS position(s)?`);
+    if (!ok) return;
+    setMessage('');
+    try {
+      const res = await api.squareOffMis();
+      setMessage(res.message);
+      await refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Square-off failed');
+    }
+  };
 
   return (
     <div className="page-content">
@@ -286,6 +484,84 @@ function TradingDashboard({
         <div className={`toast ${message.toLowerCase().includes('fail') ? 'toast-error' : 'toast-success'}`}>
           {message}
         </div>
+      )}
+
+      {page === 'settings' && (
+        <section className="panel account-panel">
+          <h2>Account & Risk Settings</h2>
+          <p className="empty-inline">
+            MIS (intraday) uses the price-band table below. CNC / NRML use Risk % and Reward Ratio from this form.
+          </p>
+          <div className="grid-3">
+            <div className="stat-card">
+              <label>Available Balance</label>
+              <div className="value">{funds ? formatINR(funds.available) : '—'}</div>
+            </div>
+            <div className="stat-card">
+              <label>Fund Used</label>
+              <div className="value">{funds ? formatINR(funds.used) : '—'}</div>
+            </div>
+            <div className="stat-card">
+              <label>Unrealized P/L</label>
+              <div className={`value ${funds && funds.unrealizedPL < 0 ? 'loss' : 'profit'}`}>
+                {funds ? formatINR(funds.unrealizedPL) : '—'}
+              </div>
+            </div>
+            <label>
+              Account Amount
+              <input
+                type="number"
+                min={1}
+                step="1000"
+                value={accountAmount}
+                onChange={(e) => setAccountAmount(Number(e.target.value))}
+              />
+            </label>
+            <label>
+              Risk % of entry (CNC / NRML)
+              <input
+                type="number"
+                value={riskPercent}
+                onChange={(e) => setRiskPercent(Number(e.target.value))}
+                step="0.1"
+                min={0.1}
+              />
+            </label>
+            <label>
+              Reward Ratio R (CNC / NRML)
+              <input
+                type="number"
+                value={rewardRatio}
+                onChange={(e) => setRewardRatio(Number(e.target.value))}
+                step="0.1"
+                min={0.1}
+              />
+            </label>
+            <div className="actions">
+              <button type="button" onClick={() => void saveSettings()}>Save Settings</button>
+            </div>
+          </div>
+
+          <h3 style={{ marginTop: '1.5rem' }}>Intraday risk template (MIS)</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Share-price range</th>
+                <th>Suggested price stop</th>
+                <th>Target (1.5R)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {INTRADAY_RISK_BANDS.map((band) => (
+                <tr key={band.label}>
+                  <td>{band.label}</td>
+                  <td>{band.stopPercent.toFixed(2).replace(/\.?0+$/, '')}%</td>
+                  <td>{band.targetPercent}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
       )}
 
       {page === 'broker' && (
@@ -340,257 +616,354 @@ function TradingDashboard({
       )}
 
       {page === 'trade' && (
-        <>
-          <section className="panel account-panel">
-            <h2>Account & Risk</h2>
-            <div className="grid-3">
-              <div className="stat-card">
-                <label>Available Balance</label>
-                <div className="value">{funds ? formatINR(funds.available) : '—'}</div>
+        <div className="terminal">
+          <section className="term-chart">
+            <div className="chart-toolbar">
+              <div className="chart-title">
+                <strong>{selected?.symbol ?? 'Select an instrument'}</strong>
+                {selected && <span className="segment-tag">{selected.segment}</span>}
+                {selected?.expiry && <span className="expiry-tag">Exp: {formatDate(selected.expiry)}</span>}
               </div>
-              <div className="stat-card">
-                <label>Fund Used</label>
-                <div className="value">{funds ? formatINR(funds.used) : '—'}</div>
+              <div className="tf-group">
+                {INTERVALS.map((iv) => (
+                  <button
+                    key={iv.id}
+                    type="button"
+                    className={chartInterval === iv.id ? 'tf-btn active' : 'tf-btn'}
+                    onClick={() => setChartInterval(iv.id)}
+                  >
+                    {iv.label}
+                  </button>
+                ))}
               </div>
-              <div className="stat-card">
-                <label>Unrealized P/L</label>
-                <div className={`value ${funds && funds.unrealizedPL < 0 ? 'loss' : 'profit'}`}>
-                  {funds ? formatINR(funds.unrealizedPL) : '—'}
+              {selected && (
+                <div className="chart-quick">
+                  <button type="button" className="quick-sell" onClick={() => void placeOrder('SELL')}>
+                    <span>SELL</span>
+                    <strong>{ltp != null ? ltp.toFixed(2) : '—'}</strong>
+                  </button>
+                  <button type="button" className="quick-buy" onClick={() => void placeOrder('BUY')}>
+                    <span>BUY</span>
+                    <strong>{ltp != null ? ltp.toFixed(2) : '—'}</strong>
+                  </button>
                 </div>
-              </div>
-              <div>
-                <label>Risk % ({formatINR(riskAmount)})</label>
-                <input type="number" value={riskPercent} onChange={(e) => setRiskPercent(Number(e.target.value))} step="0.1" />
-              </div>
-              <div>
-                <label>Reward ({formatINR(rewardAmount)})</label>
-                <input type="number" value={rewardRatio} onChange={(e) => setRewardRatio(Number(e.target.value))} step="0.1" />
-              </div>
-              <div className="actions">
-                <button type="button" onClick={() => void saveRiskSettings()}>Save Settings</button>
-              </div>
+              )}
             </div>
+            {selected && ohlc && (
+              <div className="ohlc-row">
+                <span>O <b>{ohlc.open.toFixed(2)}</b></span>
+                <span>H <b>{ohlc.high.toFixed(2)}</b></span>
+                <span>L <b>{ohlc.low.toFixed(2)}</b></span>
+                <span>C <b>{ohlc.close.toFixed(2)}</b></span>
+                {ltp != null && quotes[selected.id] != null && <span className="live-dot" title="Live" />}
+              </div>
+            )}
+            {selected ? (
+              <PriceChart
+                instrumentId={selected.id}
+                interval={chartInterval}
+                live={liveTick}
+                onOhlc={setOhlc}
+              />
+            ) : (
+              <div className="chart-empty">Pick an instrument from the watchlist</div>
+            )}
           </section>
 
-          <div className="grid-2">
-            <section className="panel">
-              <h2>Search Instrument</h2>
-              <label>
-                Segment
-                <select value={segmentFilter} onChange={(e) => setSegmentFilter(e.target.value as Segment)}>
-                  <option value="ALL">All Segments</option>
-                  <option value="EQUITY">Equity</option>
-                  <option value="FNO">F&O</option>
-                  <option value="COMMODITY">Commodity</option>
-                  <option value="CURRENCY">Currency</option>
-                </select>
-              </label>
-              <input
-                placeholder="Search (e.g. RELIANCE, NIFTY)"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              {results.length > 0 && (
-                <ul className="search-results">
-                  {results.map((inst) => (
-                    <li key={inst.id}>
-                      <button type="button" onClick={() => void selectInstrument(inst)}>
-                        <strong>{inst.symbol}</strong>
-                        <span className="segment-tag">{inst.segment}</span>
-                        <span className="inst-name">{inst.name}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+          <aside className="term-side">
+            <section className="watchlist">
+              <div className="wl-head">
+                <h3>Watchlist</h3>
+                <input
+                  placeholder="Search symbol…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+                {results.length > 0 && (
+                  <ul className="search-results wl-results">
+                    {results.map((inst) => (
+                      <li key={inst.id}>
+                        <button type="button" onClick={() => void selectInstrument(inst)}>
+                          <strong>{inst.symbol}</strong>
+                          <span className="segment-tag">{inst.segment}</span>
+                          <span className="inst-name">{inst.name}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="wl-scroll">
+                <table className="wl-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th className="num">Last</th>
+                      <th className="num">Chg%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {watchlist.map((w) => {
+                      const last = quotes[w.id] ?? w.ltp;
+                      const chg =
+                        last != null && w.prevClose ? ((last - w.prevClose) / w.prevClose) * 100 : null;
+                      return (
+                        <tr
+                          key={w.id}
+                          className={selected?.id === w.id ? 'wl-row active' : 'wl-row'}
+                          onClick={() => void selectInstrument(w)}
+                        >
+                          <td>
+                            <strong>{w.symbol}</strong>
+                            <span className="wl-seg">{w.segment}</span>
+                          </td>
+                          <td className="num">{last != null ? last.toFixed(2) : '—'}</td>
+                          <td className={`num ${chg == null ? '' : chg < 0 ? 'loss' : 'profit'}`}>
+                            {chg != null ? `${chg > 0 ? '+' : ''}${chg.toFixed(2)}%` : '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </section>
 
-            {selected && (
-              <section className="panel order-panel">
-                <div className="order-header">
-                  <div>
-                    <h2>{selected.symbol}</h2>
-                    <span className="segment-tag">{selected.segment}</span>
-                    {selected.expiry && (
-                      <span className="expiry-tag">Exp: {formatDate(selected.expiry)}</span>
+            <section className="ticket">
+              {selected ? (
+                <>
+                  <div className="ticket-head">
+                    <strong>{selected.symbol}</strong>
+                    <span className="ticket-ltp">{ltp != null ? formatINR(ltp) : '—'}</span>
+                  </div>
+                  <p className="ticket-note">
+                    {previewLevels && entryPrice != null ? (
+                      <>
+                        {previewLevels.source === 'intraday-table'
+                          ? `Intraday band ${previewLevels.bandLabel}`
+                          : 'Settings'}{' '}
+                        · SL {formatINR(previewLevels.stopLoss)} · Target {formatINR(previewLevels.target)}
+                      </>
+                    ) : productType === 'MIS' ? (
+                      'SL / Target from intraday price-band table'
+                    ) : (
+                      `SL / Target from Settings (risk ${riskPercent}%, reward ${rewardRatio}R)`
                     )}
+                  </p>
+                  <div className="ticket-grid">
+                    <label>
+                      Order Type
+                      <select value={orderType} onChange={(e) => setOrderType(e.target.value as 'MARKET' | 'LIMIT')}>
+                        <option value="MARKET">Market</option>
+                        <option value="LIMIT">Limit</option>
+                      </select>
+                    </label>
+                    <label>
+                      Product
+                      <select
+                        value={productType}
+                        onChange={(e) => setProductType(e.target.value as 'CNC' | 'MIS' | 'NRML')}
+                      >
+                        {productTypesForSegment(selected.segment).map((p) => (
+                          <option key={p} value={p}>{p}</option>
+                        ))}
+                      </select>
+                    </label>
+                    {isDerivative ? (
+                      <label>
+                        Lots (×{selected.lotSize ?? 1})
+                        <input type="number" min={1} value={lots} onChange={(e) => setLots(Number(e.target.value))} />
+                      </label>
+                    ) : (
+                      <label>
+                        Quantity
+                        <input type="number" min={1} value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} />
+                      </label>
+                    )}
+                    {orderType === 'LIMIT' && (
+                      <label>
+                        Limit Price
+                        <input value={price} onChange={(e) => setPrice(e.target.value)} />
+                      </label>
+                    )}
+                    <label>
+                      Stop Loss
+                      <input value={stopLoss} readOnly title="Auto-calculated from risk rules" />
+                    </label>
+                    <label>
+                      Target
+                      <input value={target} readOnly title="Auto-calculated from risk rules" />
+                    </label>
                   </div>
-                  <div className="ltp">
-                    LTP: {ltp != null ? formatINR(ltp) : '—'}
-                    {quotes[selected.id] != null && <span className="live-dot" title="Live" />}
-                  </div>
-                  <div className="order-actions">
-                    <button type="button" className="btn-buy" onClick={() => void placeOrder('BUY')}>Buy</button>
+                  <div className="ticket-actions">
                     <button type="button" className="btn-sell" onClick={() => void placeOrder('SELL')}>Sell</button>
+                    <button type="button" className="btn-buy" onClick={() => void placeOrder('BUY')}>Buy</button>
                   </div>
-                </div>
-                <div className="grid-4">
-                  <label>
-                    Order Type
-                    <select value={orderType} onChange={(e) => setOrderType(e.target.value as 'MARKET' | 'LIMIT')}>
-                      <option value="MARKET">Market</option>
-                      <option value="LIMIT">Limit</option>
-                    </select>
-                  </label>
-                  <label>
-                    Product
-                    <select
-                      value={productType}
-                      onChange={(e) => setProductType(e.target.value as 'CNC' | 'MIS' | 'NRML')}
-                    >
-                      {productTypesForSegment(selected.segment).map((p) => (
-                        <option key={p} value={p}>{p}</option>
-                      ))}
-                    </select>
-                  </label>
-                  {isDerivative ? (
-                    <label>
-                      Lots (×{selected.lotSize ?? 1})
-                      <input type="number" min={1} value={lots} onChange={(e) => setLots(Number(e.target.value))} />
-                    </label>
-                  ) : (
-                    <label>
-                      Quantity
-                      <input type="number" min={1} value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} />
-                    </label>
-                  )}
-                  {orderType === 'LIMIT' && (
-                    <label>
-                      Limit Price
-                      <input value={price} onChange={(e) => setPrice(e.target.value)} />
-                    </label>
-                  )}
-                  <label>
-                    Stop Loss
-                    <input value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} />
-                  </label>
-                  <label>
-                    Target
-                    <input value={target} onChange={(e) => setTarget(e.target.value)} />
-                  </label>
-                </div>
-              </section>
-            )}
-          </div>
-        </>
-      )}
-
-      {page === 'positions' && (
-        <section className="panel">
-          <h2>Positions</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Segment</th>
-                <th>Product</th>
-                <th>Avg Price</th>
-                <th>Qty</th>
-                <th>LTP</th>
-                <th>Unrealized P/L</th>
-              </tr>
-            </thead>
-            <tbody>
-              {positions.length === 0 ? (
-                <tr><td colSpan={7} className="empty">No open positions</td></tr>
+                </>
               ) : (
-                positions.map((p) => (
-                  <tr key={p.id}>
-                    <td>{p.instrument.symbol}</td>
-                    <td>{p.instrument.segment}</td>
-                    <td>{p.productType}</td>
-                    <td>{formatINR(p.averagePrice)}</td>
-                    <td>{p.quantity}</td>
-                    <td>{quotes[p.instrumentId] != null ? formatINR(quotes[p.instrumentId]) : '—'}</td>
-                    <td className={p.unrealizedPL < 0 ? 'loss' : 'profit'}>{formatINR(p.unrealizedPL)}</td>
-                  </tr>
-                ))
+                <p className="ticket-note">Select an instrument to place an order.</p>
               )}
-            </tbody>
-          </table>
-        </section>
-      )}
+            </section>
+          </aside>
 
-      {page === 'orders' && (
-        <section className="panel">
-          <h2>Order Book</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Symbol</th>
-                <th>Segment</th>
-                <th>Side</th>
-                <th>Type</th>
-                <th>Product</th>
-                <th>Mode</th>
-                <th>Qty</th>
-                <th>Price</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {orders.length === 0 ? (
-                <tr><td colSpan={11} className="empty">No orders</td></tr>
-              ) : (
-                orders.map((o) => (
-                  <tr key={o.id}>
-                    <td>{new Date(o.createdAt).toLocaleString('en-IN')}</td>
-                    <td>{o.instrument.symbol}</td>
-                    <td>{o.instrument.segment}</td>
-                    <td>{o.side}</td>
-                    <td>{o.orderType}</td>
-                    <td>{o.productType}</td>
-                    <td><span className={`status status-${(o.mode ?? 'PAPER').toLowerCase()}`}>{o.mode ?? 'PAPER'}</span></td>
-                    <td>{o.quantity}</td>
-                    <td>{o.averagePrice != null ? formatINR(o.averagePrice) : o.price != null ? formatINR(o.price) : '—'}</td>
-                    <td><span className={`status status-${o.status.toLowerCase()}`}>{o.status}</span></td>
-                    <td>
-                      {(o.status === 'OPEN' || o.status === 'PENDING') && (
-                        <button type="button" className="btn-sm" onClick={() => void cancelOrder(o.id)}>Cancel</button>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </section>
-      )}
+          <section className="term-bottom">
+            <div className="account-bar">
+              <div className="acct-item"><span>Available</span><strong>{funds ? formatINR(funds.available) : '—'}</strong></div>
+              <div className="acct-item"><span>Used margin</span><strong>{funds ? formatINR(funds.used) : '—'}</strong></div>
+              <div className="acct-item"><span>Total</span><strong>{funds ? formatINR(funds.total) : '—'}</strong></div>
+              <div className="acct-item">
+                <span>Realized P/L</span>
+                <strong className={funds && funds.realizedProfit - funds.realizedLoss < 0 ? 'loss' : 'profit'}>
+                  {funds ? formatINR(funds.realizedProfit - funds.realizedLoss) : '—'}
+                </strong>
+              </div>
+              <div className="acct-item">
+                <span>Unrealized P/L</span>
+                <strong className={funds && funds.unrealizedPL < 0 ? 'loss' : 'profit'}>
+                  {funds ? formatINR(funds.unrealizedPL) : '—'}
+                </strong>
+              </div>
+            </div>
 
-      {page === 'trades' && (
-        <section className="panel">
-          <h2>Trade Log</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Action</th>
-                <th>Stock</th>
-                <th>Quantity</th>
-                <th>Price</th>
-                <th>Total Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {trades.length === 0 ? (
-                <tr><td colSpan={6} className="empty">No trades yet</td></tr>
-              ) : (
-                trades.map((t) => (
-                  <tr key={t.id}>
-                    <td>{new Date(t.datetime).toLocaleString('en-IN')}</td>
-                    <td>{t.action}</td>
-                    <td>{t.stock}</td>
-                    <td>{t.quantity}</td>
-                    <td>{formatINR(t.price)}</td>
-                    <td>{formatINR(t.totalCost)}</td>
-                  </tr>
-                ))
+            <div className="bottom-tabs">
+              {(
+                [
+                  ['positions', `Positions${positions.length ? ` ${positions.length}` : ''}`],
+                  ['holdings', `Holdings${holdings.length ? ` ${holdings.length}` : ''}`],
+                  ['orders', 'Orders'],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={bottomTab === id ? 'pill active' : 'pill'}
+                  onClick={() => setBottomTab(id)}
+                >
+                  {label}
+                </button>
+              ))}
+              {bottomTab === 'positions' && positions.some((p) => p.productType === 'MIS') && (
+                <button type="button" className="btn-sell btn-sm pill-right" onClick={() => void squareOffAllMis()}>
+                  Square Off All MIS
+                </button>
               )}
-            </tbody>
-          </table>
-        </section>
+            </div>
+
+            <div className="bottom-scroll">
+              {bottomTab === 'positions' && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Symbol</th><th>Side</th><th>Product</th><th className="num">Qty</th>
+                      <th className="num">Avg price</th><th className="num">Last</th>
+                      <th className="num">Unrealized P/L</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positions.length === 0 ? (
+                      <tr><td colSpan={8} className="empty">No open positions</td></tr>
+                    ) : (
+                      positions.map((p) => (
+                        <tr key={p.id} className="clickable" onClick={() => void selectInstrument(p.instrument)}>
+                          <td>{p.instrument.symbol}</td>
+                          <td className={(p.side ?? 'BUY') === 'SELL' ? 'loss' : 'profit'}>{p.side ?? 'BUY'}</td>
+                          <td>{p.productType}</td>
+                          <td className="num">{p.quantity}</td>
+                          <td className="num">{formatINR(p.averagePrice)}</td>
+                          <td className="num">{quotes[p.instrumentId] != null ? formatINR(quotes[p.instrumentId]) : '—'}</td>
+                          <td className={`num ${p.unrealizedPL < 0 ? 'loss' : 'profit'}`}>{formatINR(p.unrealizedPL)}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn-sm btn-sell"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void squareOff(p.id, p.instrument.symbol);
+                              }}
+                            >
+                              Close
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )}
+
+              {bottomTab === 'holdings' && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Symbol</th><th className="num">Qty</th><th className="num">Avg price</th>
+                      <th className="num">Last</th><th className="num">Value</th><th className="num">P/L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {holdings.length === 0 ? (
+                      <tr><td colSpan={6} className="empty">No holdings — CNC positions settle T+1</td></tr>
+                    ) : (
+                      holdings.map((h) => {
+                        const ltpNow = quotes[h.instrument.id];
+                        const pl = ltpNow != null ? (ltpNow - h.averagePrice) * h.quantity : null;
+                        return (
+                          <tr key={h.id} className="clickable" onClick={() => void selectInstrument(h.instrument)}>
+                            <td>{h.instrument.symbol}</td>
+                            <td className="num">{h.quantity}</td>
+                            <td className="num">{formatINR(h.averagePrice)}</td>
+                            <td className="num">{ltpNow != null ? formatINR(ltpNow) : '—'}</td>
+                            <td className="num">{ltpNow != null ? formatINR(ltpNow * h.quantity) : '—'}</td>
+                            <td className={`num ${pl == null ? '' : pl < 0 ? 'loss' : 'profit'}`}>
+                              {pl != null ? formatINR(pl) : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              )}
+
+              {bottomTab === 'orders' && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Time</th><th>Symbol</th><th>Side</th><th>Type</th><th>Product</th><th>Mode</th>
+                      <th className="num">Qty</th><th className="num">Price</th><th>Status</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orders.length === 0 ? (
+                      <tr><td colSpan={10} className="empty">No orders</td></tr>
+                    ) : (
+                      orders.map((o) => (
+                        <tr key={o.id}>
+                          <td>{new Date(o.createdAt).toLocaleString('en-IN')}</td>
+                          <td>{o.instrument.symbol}</td>
+                          <td className={o.side === 'SELL' ? 'loss' : 'profit'}>{o.side}</td>
+                          <td>{o.orderType}</td>
+                          <td>{o.productType}</td>
+                          <td><span className={`status status-${(o.mode ?? 'PAPER').toLowerCase()}`}>{o.mode ?? 'PAPER'}</span></td>
+                          <td className="num">{o.quantity}</td>
+                          <td className="num">
+                            {o.averagePrice != null ? formatINR(o.averagePrice) : o.price != null ? formatINR(o.price) : '—'}
+                          </td>
+                          <td><span className={`status status-${o.status.toLowerCase()}`}>{o.status}</span></td>
+                          <td>
+                            {(o.status === 'OPEN' || o.status === 'PENDING') && (
+                              <button type="button" className="btn-sm" onClick={() => void cancelOrder(o.id)}>Cancel</button>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )}
+
+            </div>
+          </section>
+        </div>
       )}
 
       {page === 'journal' && (
@@ -656,43 +1029,6 @@ function TradingDashboard({
           </div>
         </section>
       )}
-
-      {page === 'holdings' && (
-        <section className="panel">
-          <h2>Holdings (Delivery)</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Segment</th>
-                <th>Quantity</th>
-                <th>Avg Price</th>
-                <th>LTP</th>
-                <th>Value</th>
-              </tr>
-            </thead>
-            <tbody>
-              {holdings.length === 0 ? (
-                <tr><td colSpan={6} className="empty">No holdings — CNC positions settle T+1</td></tr>
-              ) : (
-                holdings.map((h) => {
-                  const ltpNow = quotes[h.instrument.id];
-                  return (
-                    <tr key={h.id}>
-                      <td>{h.instrument.symbol}</td>
-                      <td>{h.instrument.segment}</td>
-                      <td>{h.quantity}</td>
-                      <td>{formatINR(h.averagePrice)}</td>
-                      <td>{ltpNow != null ? formatINR(ltpNow) : '—'}</td>
-                      <td>{ltpNow != null ? formatINR(ltpNow * h.quantity) : '—'}</td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </section>
-      )}
     </div>
   );
 }
@@ -704,9 +1040,9 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
   const [algo, setAlgo] = useState<AlgoDetail | null>(null);
   const [sourceCode, setSourceCode] = useState('');
   const [name, setName] = useState('');
-  const [search, setSearch] = useState('RELIANCE');
+  const [search, setSearch] = useState('');
   const [results, setResults] = useState<Instrument[]>([]);
-  const [instrument, setInstrument] = useState<Instrument | null>(null);
+  const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [fastPeriod, setFastPeriod] = useState(9);
   const [slowPeriod, setSlowPeriod] = useState(21);
   const [quantity, setQuantity] = useState(10);
@@ -820,8 +1156,8 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
   };
 
   const runBacktest = async () => {
-    if (!selectedId || !instrument) {
-      setMessage('Select an instrument first');
+    if (!selectedId || instruments.length === 0) {
+      setMessage('Add at least one instrument first');
       return;
     }
     setLoading(true);
@@ -829,7 +1165,7 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
     setBacktest(null);
     try {
       const result = await api.backtestAlgo(selectedId, {
-        instrumentId: instrument.id,
+        instrumentIds: instruments.map((i) => i.id),
         days: 30,
         interval: '5m',
         config: {
@@ -841,7 +1177,9 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
         },
       });
       setBacktest(result);
-      setMessage(`Backtest done — ${result.candleCount} candles, P/L ${formatINR(result.totalPnL)}`);
+      setMessage(
+        `Backtest done — ${instruments.length} instrument${instruments.length === 1 ? '' : 's'}, ${result.candleCount} candles, P/L ${formatINR(result.totalPnL)}`,
+      );
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Backtest failed');
     } finally {
@@ -850,8 +1188,8 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
   };
 
   const deploy = async () => {
-    if (!selectedId || !instrument) {
-      setMessage('Select an instrument first');
+    if (!selectedId || instruments.length === 0) {
+      setMessage('Add at least one instrument first');
       return;
     }
     setLoading(true);
@@ -859,7 +1197,7 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
     try {
       const dep = await api.deployAlgo(selectedId, {
         paperAccountId: accountId,
-        instrumentId: instrument.id,
+        instrumentIds: instruments.map((i) => i.id),
         config: {
           strategyType: 'sma_crossover',
           fastPeriod,
@@ -871,7 +1209,7 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
         maxOrdersPerDay: maxOrders,
       });
       setActiveDeploymentId(dep.id);
-      setMessage(`Deployed — deployment ${dep.id.slice(0, 8)}…`);
+      setMessage(`Deployed on ${instruments.length} instrument${instruments.length === 1 ? '' : 's'} — deployment ${dep.id.slice(0, 8)}…`);
       await loadAlgo(selectedId);
       await refreshList();
     } catch (err) {
@@ -893,11 +1231,14 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
     }
   };
 
-  const selectInstrument = (inst: Instrument) => {
-    setInstrument(inst);
-    setSearch(inst.symbol);
+  const addInstrument = (inst: Instrument) => {
+    setInstruments((prev) => (prev.some((i) => i.id === inst.id) ? prev : [...prev, inst]));
+    setSearch('');
     setResults([]);
-    setProductType(defaultProductForSegment(inst.segment) === 'CNC' ? 'MIS' : 'MIS');
+  };
+
+  const removeInstrument = (id: string) => {
+    setInstruments((prev) => prev.filter((i) => i.id !== id));
   };
 
   return (
@@ -971,9 +1312,9 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
                 <section className="panel">
                   <h2>Deploy Config</h2>
                   <label>
-                    Instrument
+                    Instruments
                     <input
-                      placeholder="Search RELIANCE"
+                      placeholder="Search and add (e.g. RELIANCE, TCS)"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                     />
@@ -982,7 +1323,7 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
                     <ul className="search-results">
                       {results.map((inst) => (
                         <li key={inst.id}>
-                          <button type="button" onClick={() => selectInstrument(inst)}>
+                          <button type="button" onClick={() => addInstrument(inst)}>
                             <strong>{inst.symbol}</strong>
                             <span className="inst-name">{inst.name}</span>
                           </button>
@@ -990,7 +1331,24 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
                       ))}
                     </ul>
                   )}
-                  {instrument && <p className="selected-inst">Selected: <strong>{instrument.symbol}</strong></p>}
+                  <div className="chip-list">
+                    {instruments.length === 0 ? (
+                      <span className="chip-hint">No instruments added yet</span>
+                    ) : (
+                      instruments.map((inst) => (
+                        <span key={inst.id} className="chip">
+                          {inst.symbol}
+                          <button
+                            type="button"
+                            aria-label={`Remove ${inst.symbol}`}
+                            onClick={() => removeInstrument(inst.id)}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
                   <div className="grid-2">
                     <label>
                       Fast SMA
@@ -1047,10 +1405,33 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
                       </div>
                     </div>
                   </div>
+                  {backtest.perInstrument && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Instrument</th>
+                          <th>Trades</th>
+                          <th>Win Rate</th>
+                          <th>P/L</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {backtest.perInstrument.map((p) => (
+                          <tr key={p.instrumentId}>
+                            <td>{p.symbol}</td>
+                            <td>{p.totalTrades}</td>
+                            <td>{p.winRate.toFixed(1)}%</td>
+                            <td className={p.totalPnL < 0 ? 'loss' : 'profit'}>{formatINR(p.totalPnL)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                   <table>
                     <thead>
                       <tr>
                         <th>Time</th>
+                        {backtest.perInstrument && <th>Symbol</th>}
                         <th>Side</th>
                         <th>Price</th>
                         <th>Qty</th>
@@ -1061,6 +1442,7 @@ function AlgoStudio({ auth }: { auth: AuthResponse }) {
                       {backtest.trades.slice(-20).map((t, i) => (
                         <tr key={i}>
                           <td>{new Date(t.timestamp).toLocaleString('en-IN')}</td>
+                          {backtest.perInstrument && <td>{t.symbol}</td>}
                           <td>{t.side}</td>
                           <td>{formatINR(t.price)}</td>
                           <td>{t.quantity}</td>
@@ -1210,26 +1592,46 @@ function AppShell({ auth, onLogout }: { auth: AuthResponse; onLogout: () => void
   );
 }
 
+const DEV_EMAIL = 'demo@paper.local';
+const DEV_PASSWORD = 'demo1234';
+const DEV_NAME = 'Demo Trader';
+
+async function ensureDevSession(): Promise<AuthResponse> {
+  const token = getToken();
+  if (token) {
+    try {
+      const me = await api.me();
+      return {
+        token,
+        user: { id: me.id, email: me.email, name: me.name },
+        account: me.accounts[0],
+      };
+    } catch {
+      clearToken();
+    }
+  }
+
+  try {
+    const res = await api.login(DEV_EMAIL, DEV_PASSWORD);
+    setToken(res.token);
+    return res;
+  } catch {
+    const res = await api.register(DEV_EMAIL, DEV_PASSWORD, DEV_NAME);
+    setToken(res.token);
+    return res;
+  }
+}
+
 function App() {
   const [auth, setAuth] = useState<AuthResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = getToken();
-    if (!token) {
-      setLoading(false);
-      return;
-    }
-    void api
-      .me()
-      .then((me) => {
-        setAuth({
-          token,
-          user: { id: me.id, email: me.email, name: me.name },
-          account: me.accounts[0],
-        });
+    void ensureDevSession()
+      .then(setAuth)
+      .catch(() => {
+        /* fall through to AuthScreen if API is down */
       })
-      .catch(() => clearToken())
       .finally(() => setLoading(false));
   }, []);
 
@@ -1249,5 +1651,6 @@ function App() {
 createRoot(document.getElementById('app')!).render(
   <StrictMode>
     <App />
+    <ThemeToggle />
   </StrictMode>,
 );
